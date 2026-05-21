@@ -45,6 +45,11 @@ export interface SystemHealth {
 
 // ─── WebSocket message shapes ─────────────────────────────────────────────────
 
+export interface StormRegion {
+  x_range: [number, number];
+  y_range: [number, number];
+}
+
 export interface StepUpdateMsg {
   type: "step_update";
   episode: number;
@@ -55,6 +60,8 @@ export interface StepUpdateMsg {
   rewards: number[];
   alive?: boolean[];
   dynamics: DynamicsState;
+  no_fly_zones?: number[][];
+  storm_regions?: StormRegion[];
   symbolic_mask: number[] | null;
 }
 
@@ -118,4 +125,23 @@ export interface TrainingStatus {
   current_system: string;
   systems: Record<string, { has_checkpoints: boolean; episodes_recorded: number }>;
   total_episodes_recorded: number;
+}
+
+export interface SystemReport {
+  n_episodes: number;
+  reward_mean: number;
+  reward_std: number;
+  reward_ci95: [number, number];
+  success_rate_mean: number;
+  success_rate_std: number;
+  success_rate_ci95: [number, number];
+  best_deliveries: number;
+  total_rule_violations: number;
+  total_collisions: number;
+  convergence_episode: number | null;
+}
+
+export interface ExperimentalReport {
+  systems: Record<string, SystemReport>;
+  generated_episodes: number;
 }

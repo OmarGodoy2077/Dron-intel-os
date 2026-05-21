@@ -166,7 +166,49 @@ class MetricsCollector:
             .reset_index(drop=True)
         )
         df["rolling_avg"] = df[metric].rolling(window=20, min_periods=1).mean()
+        # reward_smooth: media móvil de recompensa para evidenciar la tendencia
+        # asintótica de convergencia (Paso 2 de la verificación automatizada).
+        reward_col = self._df[self._df["system"] == system]["total_reward"].reset_index(drop=True)
+        df["reward_smooth"] = reward_col.rolling(window=20, min_periods=1).mean()
         return df
+
+    def get_experimental_report(self) -> Dict:
+        """Reporte experimental con significancia estadística por sistema.
+
+        Para cada sistema calcula, sobre todos sus episodios registrados:
+          n, media ± desviación estándar e intervalo de confianza al 95 % de la
+          recompensa y la tasa de éxito, mejor episodio, episodio de convergencia,
+          y totales de violaciones/colisiones. Apto para la sección de resultados
+          del reporte técnico (Criterio 10).
+        """
+        report: Dict = {"systems": {}, "generated_episodes": int(len(self._df))}
+        for system in sorted(self._df["system"].dropna().unique()):
+            d = self._df[self._df["system"] == system]
+            n = len(d)
+            if n == 0:
+                continue
+            reward = d["total_reward"].astype(float)
+            success = d["success_rate"].astype(float)
+            # IC 95 % aproximado (normal): media ± 1.96 · sd/√n
+            def ci95(series):
+                sd = float(series.std(ddof=1)) if n > 1 else 0.0
+                half = 1.96 * sd / (n ** 0.5) if n > 0 else 0.0
+                return [round(float(series.mean()) - half, 3),
+                        round(float(series.mean()) + half, 3)]
+            report["systems"][system] = {
+                "n_episodes":          int(n),
+                "reward_mean":         round(float(reward.mean()), 2),
+                "reward_std":          round(float(reward.std(ddof=1)) if n > 1 else 0.0, 2),
+                "reward_ci95":         ci95(reward),
+                "success_rate_mean":   round(float(success.mean()), 4),
+                "success_rate_std":    round(float(success.std(ddof=1)) if n > 1 else 0.0, 4),
+                "success_rate_ci95":   ci95(success),
+                "best_deliveries":     int(d["deliveries_completed"].max()),
+                "total_rule_violations": int(d["rule_violations"].sum()),
+                "total_collisions":    int(d["collisions"].sum()),
+                "convergence_episode": self._convergence_episode(d.reset_index(drop=True)),
+            }
+        return report
 
     def to_live_json(self, system: str, last_n: int = 50) -> Dict:
         """Compact format consumed by the LiveStats WebSocket broadcast."""

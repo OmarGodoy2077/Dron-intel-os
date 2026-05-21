@@ -61,6 +61,15 @@ class TestSpaces:
         for k in oa:
             np.testing.assert_array_equal(oa[k], ob[k])
 
+    def test_same_seed_gives_identical_package_layout(self):
+        """Comparación justa entre sistemas: misma semilla → mismo layout de paquetes."""
+        a = CyberCityEnv(grid_size=30, num_drones=3, num_packages=6, max_steps=50)
+        b = CyberCityEnv(grid_size=30, num_drones=3, num_packages=6, max_steps=50)
+        a.reset(seed=7)
+        b.reset(seed=7)
+        np.testing.assert_array_equal(a.package_positions, b.package_positions)
+        np.testing.assert_array_equal(a.package_destinations, b.package_destinations)
+
 
 # ── Dinámica de pasos ─────────────────────────────────────────────────────────
 

@@ -107,22 +107,26 @@ columns = [
 
 ## 5. Procedimiento de Ejecución
 
+**Vía API (recomendado):** lanzar los tres sistemas con la **misma semilla base**
+garantiza condiciones idénticas (mismo layout de paquetes y misma secuencia de
+eventos por episodio) → comparación justa:
+
+```
+POST /training/start?system=astar&episodes=200&seed=42
+POST /training/start?system=dqn&episodes=200&seed=42&mode=scratch
+POST /training/start?system=neuro_dqn&episodes=200&seed=42&mode=scratch
+GET  /metrics/report     # estadística por sistema (media±std, IC95%, convergencia)
+GET  /metrics/comparison # tabla comparativa
+```
+
+Desde el frontend: activar **"Semilla fija"** en el panel de control (mismo valor
+para los tres sistemas). El reporte estadístico se muestra en la pestaña *Histórico*.
+
 ```python
-# Bloque de ejecución comparativa
-from backend.environment.city_env import CyberCityEnv
-from backend.agents.dqn_agent import DQNAgent
-from backend.logic.neuro_symbolic_bridge import NeuroSymbolicBridge
-from backend.analysis.metrics import MetricsCollector
-
-env = CyberCityEnv(grid_size=50, num_drones=5)
-
-for system in ["astar", "dqn", "neuro_dqn"]:
-    metrics = MetricsCollector(f"data/logs_{system}.csv")
-    run_training(system=system, episodes=200, env=env, metrics=metrics)
-    metrics.print_report(system=system)
-
-# Tabla comparativa final
+# Equivalente programático
+from analysis.metrics import MetricsCollector
 collector = MetricsCollector("data/training_logs.csv")
+report = collector.get_experimental_report()   # media±std, IC95%, mejor, convergencia
 print(collector.get_comparison_table().to_markdown())
 ```
 

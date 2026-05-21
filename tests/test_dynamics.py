@@ -105,6 +105,19 @@ class TestDynamicsEngine:
         eng.step()
         assert not eng.active_storms
 
+    def test_seeded_reset_is_reproducible(self):
+        """Dos motores con la misma semilla producen la misma secuencia de eventos."""
+        a = DynamicsEngine(grid_size=50, storm_prob=0.5, wind_prob=0.5, nfz_prob=0.5)
+        b = DynamicsEngine(grid_size=50, storm_prob=0.5, wind_prob=0.5, nfz_prob=0.5)
+        a.reset(seed=123)
+        b.reset(seed=123)
+        for _ in range(20):
+            sa = a.step()
+            sb = b.step()
+            assert sa["num_active_storms"] == sb["num_active_storms"]
+            assert sa["num_active_winds"] == sb["num_active_winds"]
+            assert sa["num_dynamic_nfzs"] == sb["num_dynamic_nfzs"]
+
     def test_dominant_wind_is_highest_intensity(self):
         eng = DynamicsEngine(grid_size=50, storm_prob=0.0, wind_prob=0.0, nfz_prob=0.0,
                              rng=np.random.default_rng(4))

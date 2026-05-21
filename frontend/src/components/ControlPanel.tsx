@@ -6,7 +6,7 @@ interface ControlPanelProps {
   training: TrainingState;
   health: SystemHealth | null;
   status: TrainingStatus | null;
-  onStart: (system: TrainingState["system"], episodes: number, mode: "resume" | "scratch") => void;
+  onStart: (system: TrainingState["system"], episodes: number, mode: "resume" | "scratch", seed?: number) => void;
   onStop: () => void;
   onDeleteData: (system?: string) => void;
 }
@@ -22,6 +22,8 @@ export function ControlPanel({ training, health, status, onStart, onStop, onDele
   const [episodes, setEpisodes] = useState(200);
   const [mode, setMode] = useState<"resume" | "scratch">("scratch");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [reproducible, setReproducible] = useState(false);
+  const [seed, setSeed] = useState(42);
 
   const canStart = !training.isTraining;
   const progress = training.maxEpisodes > 0
@@ -152,6 +154,36 @@ export function ControlPanel({ training, health, status, onStart, onStop, onDele
         </div>
       )}
 
+      {/* Reproducibilidad: semilla fija (comparación justa entre sistemas) */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: P.muted }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: canStart ? "pointer" : "not-allowed" }}>
+          <input
+            type="checkbox"
+            checked={reproducible}
+            disabled={!canStart}
+            onChange={(e) => setReproducible(e.target.checked)}
+            style={{ accentColor: P.drone }}
+          />
+          Semilla fija
+        </label>
+        {reproducible && (
+          <input
+            type="number"
+            value={seed}
+            disabled={!canStart}
+            onChange={(e) => setSeed(Number(e.target.value))}
+            style={{
+              width: 70, padding: "3px 6px", borderRadius: 4,
+              background: "rgba(255,255,255,0.03)", border: `1px solid ${P.border}`,
+              color: P.text, fontFamily: P.mono, fontSize: 10.5,
+            }}
+          />
+        )}
+        <span style={{ fontSize: 9, color: "rgba(148,163,184,0.4)", marginLeft: "auto" }}>
+          {reproducible ? "reproducible" : "estocástico"}
+        </span>
+      </div>
+
       {/* Progress bar (visible while training) */}
       {training.isTraining && (
         <div>
@@ -186,7 +218,7 @@ export function ControlPanel({ training, health, status, onStart, onStop, onDele
       {/* Start / Stop buttons */}
       {canStart ? (
         <button
-          onClick={() => onStart(selectedSystem, episodes, effectiveMode)}
+          onClick={() => onStart(selectedSystem, episodes, effectiveMode, reproducible ? seed : undefined)}
           style={btnStyle(P.ok)}
         >
           <span style={dotStyle(P.ok)} />

@@ -14,7 +14,9 @@ donde $\mathcal{I} = \{1, \dots, n\}$ es el conjunto de drones.
 
 Cada dron $i$ observa un vector de estado local $s^i_t \in \mathbb{R}^{11}$ (implementación en `CyberCityEnv._get_obs()`).
 
-$$s^i_t = \bigl(x,\; y,\; z,\; \beta \in [0,100],\; \kappa,\; \omega,\; \eta \bigr)$$
+$$s^i_t = \bigl(x,\; y,\; z,\; \beta,\; \kappa,\; \omega,\; \eta,\; tdx,\; tdy,\; cdx,\; cdy \bigr) \in \mathbb{R}^{11}$$
+
+Los siete primeros componentes se normalizan a $[0,1]$ y los cuatro deltas de dirección a $[-1,1]$. Los deltas $(tdx, tdy)$ y $(cdx, cdy)$ — añadidos como *reward/observation shaping* para acelerar el aprendizaje de navegación — apuntan respectivamente al objetivo activo (paquete o destino) y a la estación de carga más cercana.
 
 | Componente | Símbolo | Dominio | Descripción |
 |---|---|---|---|

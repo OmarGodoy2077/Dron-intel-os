@@ -18,6 +18,8 @@ import {
   TrainingStartResponse,
   TrainingStatus,
   RawLogEntry,
+  StormRegion,
+  ExperimentalReport,
 } from "./types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -111,8 +113,11 @@ export default function App() {
   const [symLogs, setSymLogs]     = useState<RuleLogEntry[]>([]);
   const [health, setHealth]       = useState<SystemHealth | null>(null);
   const [demandZones, setDemandZones] = useState<[number, number][]>([]);
+  const [noFlyZones, setNoFlyZones] = useState<[number, number][]>([]);
+  const [stormRegions, setStormRegions] = useState<StormRegion[]>([]);
   const [activeTab, setActiveTab] = useState("operaciones");
   const [compareData, setCompareData] = useState<Record<string, unknown> | null>(null);
+  const [report, setReport] = useState<ExperimentalReport | null>(null);
   const [trainingStatus, setTrainingStatus] = useState<TrainingStatus | null>(null);
 
   // Estado de conocimiento previo (checkpoints + episodios registrados)
@@ -166,6 +171,8 @@ export default function App() {
         rewards:   m.rewards    ?? [],
       });
       if (m.dynamics) setDynamics(m.dynamics);
+      if (Array.isArray(m.no_fly_zones)) setNoFlyZones(m.no_fly_zones as [number, number][]);
+      if (Array.isArray(m.storm_regions)) setStormRegions(m.storm_regions);
       setTraining((prev) => ({
         ...prev,
         isTraining:     true,
@@ -214,8 +221,10 @@ export default function App() {
     system: TrainingState["system"],
     episodes: number,
     mode: "resume" | "scratch",
+    seed?: number,
   ) => {
-    fetch(`${API}/training/start?system=${system}&episodes=${episodes}&mode=${mode}`, { method: "POST" })
+    const seedQuery = seed != null ? `&seed=${seed}` : "";
+    fetch(`${API}/training/start?system=${system}&episodes=${episodes}&mode=${mode}${seedQuery}`, { method: "POST" })
       .then<TrainingStartResponse>((r) => r.json())
       .then((data) => {
         if (!data.error) {
@@ -255,13 +264,17 @@ export default function App() {
 
   const handleTabChange = useCallback((tab: string) => {
     setActiveTab(tab);
-    if (tab === "historico" && !compareData) {
+    if (tab === "historico") {
       fetch(`${API}/metrics/comparison`)
         .then<Record<string, unknown>>((r) => r.json())
         .then(setCompareData)
         .catch(() => {});
+      fetch(`${API}/metrics/report`)
+        .then<ExperimentalReport>((r) => r.json())
+        .then(setReport)
+        .catch(() => {});
     }
-  }, [compareData]);
+  }, []);
 
   // ── Derived KPIs ─────────────────────────────────────────────────────────────
   const latest   = epHistory[epHistory.length - 1];
@@ -311,7 +324,7 @@ export default function App() {
         {activeTab === "reglas" ? (
           <PrologRulesView />
         ) : activeTab === "historico" ? (
-          <HistoricoView compareData={compareData} epHistory={epHistory} />
+          <HistoricoView compareData={compareData} epHistory={epHistory} report={report} />
         ) : activeTab === "flota" ? (
           <FlotaView droneState={droneState} />
         ) : activeTab === "entrenamiento" ? (
@@ -367,8 +380,8 @@ export default function App() {
                 dronePositions={droneState.positions}
                 droneBatteries={droneState.batteries}
                 droneAlive={droneState.alive}
-                noFlyZones={[]}
-                stormRegions={[]}
+                noFlyZones={noFlyZones}
+                stormRegions={stormRegions}
                 demandZones={demandZones}
               />
             </div>
@@ -491,9 +504,11 @@ function PrologRulesView() {
   );
 }
 
-function HistoricoView({ compareData, epHistory }: { compareData: Record<string, unknown> | null; epHistory: EpisodePoint[] }) {
+function HistoricoView({ compareData, epHistory, report }: { compareData: Record<string, unknown> | null; epHistory: EpisodePoint[]; report: ExperimentalReport | null }) {
   const systems = ["astar", "dqn", "neuro_dqn"] as const;
   const totalEpisodes = epHistory.length;
+  const reportSystems = report?.systems ? Object.entries(report.systems) : [];
+  const sysLabel = (s: string) => s === "neuro_dqn" ? "Neuro-DQN" : s === "dqn" ? "DQN Puro" : "A* Baseline";
 
   const compRows = useMemo(() => {
     if (!compareData) return [];
@@ -515,6 +530,41 @@ function HistoricoView({ compareData, epHistory }: { compareData: Record<string,
       <div style={{ fontSize: 11, letterSpacing: "0.1em", color: P.muted, marginBottom: 16 }}>
         HISTÓRICO DE ENTRENAMIENTO
       </div>
+
+      {/* Reporte experimental con estadística (media ± std, IC 95%) */}
+      {reportSystems.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 10, color: P.muted, marginBottom: 8, letterSpacing: "0.08em" }}>
+            REPORTE EXPERIMENTAL · SIGNIFICANCIA ESTADÍSTICA — /metrics/report
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: P.mono, fontSize: 10.5 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${P.border}` }}>
+                  {["Sistema", "n", "Reward (μ±σ)", "IC95% Reward", "Éxito (μ±σ)", "Mejor", "Violac.", "Colis.", "Converg."].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "6px 10px", color: P.muted, fontWeight: 500, fontSize: 10, letterSpacing: "0.05em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {reportSystems.map(([sys, r], i) => (
+                  <tr key={sys} style={{ borderBottom: `1px solid rgba(125,211,252,0.04)`, background: i % 2 === 0 ? "rgba(255,255,255,0.01)" : "transparent" }}>
+                    <td style={{ padding: "7px 10px", color: P.drone, fontWeight: 600 }}>{sysLabel(sys)}</td>
+                    <td style={{ padding: "7px 10px", color: P.text }}>{r.n_episodes}</td>
+                    <td style={{ padding: "7px 10px", color: P.text }}>{r.reward_mean.toFixed(0)} ± {r.reward_std.toFixed(0)}</td>
+                    <td style={{ padding: "7px 10px", color: P.muted }}>[{r.reward_ci95[0].toFixed(0)}, {r.reward_ci95[1].toFixed(0)}]</td>
+                    <td style={{ padding: "7px 10px", color: P.ok }}>{(r.success_rate_mean * 100).toFixed(1)}% ± {(r.success_rate_std * 100).toFixed(1)}</td>
+                    <td style={{ padding: "7px 10px", color: P.drone }}>{r.best_deliveries}/10</td>
+                    <td style={{ padding: "7px 10px", color: r.total_rule_violations > 0 ? P.crit : P.text }}>{r.total_rule_violations}</td>
+                    <td style={{ padding: "7px 10px", color: r.total_collisions > 0 ? P.warn : P.text }}>{r.total_collisions}</td>
+                    <td style={{ padding: "7px 10px", color: P.muted }}>{r.convergence_episode != null ? `ep ${r.convergence_episode}` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Session summary */}
       <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
@@ -860,7 +910,7 @@ function ConfigView({ health, training }: ConfigViewProps) {
     { k: "Batería recarga",  v: "+25%/step en estación" },
     { k: "Max steps/ep",     v: "500" },
     { k: "Predictor demanda", v: health?.ml_ok ? "✓ GBR activo (sesga destinos)" : "✗ Offline" },
-    { k: "Suite de tests",   v: "113 tests · pytest /tests" },
+    { k: "Suite de tests",   v: "116 tests · pytest /tests" },
     { k: "Sistema activo",   v: training.system.toUpperCase() },
   ];
 

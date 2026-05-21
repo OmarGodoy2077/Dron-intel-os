@@ -5,7 +5,8 @@ Endpoints REST:
   GET  /health                 → estado del servicio
   GET  /metrics/summary        → estadísticas agregadas
   GET  /metrics/comparison     → tabla comparativa A*/DQN/Neuro-DQN
-  GET  /metrics/curve/{system} → curva de aprendizaje
+  GET  /metrics/curve/{system} → curva de aprendizaje (incluye reward_smooth)
+  GET  /metrics/report         → reporte experimental con estadística (media±std, IC95%)
   GET  /metrics/live/{system}  → últimos N episodios (feed WebSocket)
   POST /training/start         → lanza el loop de entrenamiento (async; mode=resume|scratch)
   POST /training/stop          → detiene el entrenamiento
@@ -225,12 +226,19 @@ async def get_live(system: str, last_n: int = 50) -> Dict:
     return metrics.to_live_json(system, last_n)
 
 
+@app.get("/metrics/report")
+async def get_experimental_report() -> Dict:
+    """Reporte experimental con estadística (media±std, IC95%) por sistema."""
+    return metrics.get_experimental_report()
+
+
 @app.post("/training/start")
 @app.post("/start-training")
 async def start_training(
     system: str = "neuro_dqn",
     episodes: int = 200,
     mode: str = "scratch",
+    seed: Optional[int] = None,
 ) -> Dict:
     """Inicia el entrenamiento.
 
@@ -239,6 +247,10 @@ async def start_training(
         episodes: número de episodios a correr.
         mode    : 'resume' carga checkpoints previos (conocimiento acumulado);
                   'scratch' entrena desde cero (pesos aleatorios, ε=1.0).
+        seed    : semilla base opcional. Si se indica, cada episodio usa
+                  `seed + episodio` para entorno y dinámica → corridas
+                  reproducibles y condiciones IDÉNTICAS entre A*/DQN/Neuro-DQN
+                  (mismo layout de paquetes y misma secuencia de eventos).
     """
     global training_active, current_system, agents
     if training_active:
@@ -252,16 +264,19 @@ async def start_training(
 
     training_active = True
     current_system  = system
-    asyncio.create_task(_training_loop(system=system, max_episodes=episodes))
+    asyncio.create_task(
+        _training_loop(system=system, max_episodes=episodes, base_seed=seed)
+    )
     logger.info(
-        "Entrenamiento iniciado: system=%s, episodes=%d, mode=%s (checkpoints cargados: %d)",
-        system, episodes, mode, resumed,
+        "Entrenamiento iniciado: system=%s, episodes=%d, mode=%s, seed=%s (checkpoints cargados: %d)",
+        system, episodes, mode, seed, resumed,
     )
     return {
         "status":           "started",
         "system":           system,
         "max_episodes":     episodes,
         "mode":             mode,
+        "seed":             seed,
         "checkpoints_loaded": resumed,
     }
 
@@ -558,8 +573,15 @@ def _get_astar_target(
 # Loop de entrenamiento asíncrono
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _training_loop(system: str, max_episodes: int) -> None:
+async def _training_loop(
+    system: str, max_episodes: int, base_seed: Optional[int] = None
+) -> None:
     """Loop principal de entrenamiento — ejecuta max_episodes episodios.
+
+    Args:
+        base_seed: si se indica, el episodio `e` usa la semilla `base_seed + e`
+                   para entorno y dinámica (reproducibilidad y comparación justa
+                   entre sistemas). None = estocástico (comportamiento previo).
 
     Broadcast:
       - Cada 25 steps: step_update con posiciones, baterías, dinámica.
@@ -575,12 +597,17 @@ async def _training_loop(system: str, max_episodes: int) -> None:
 
         assert env is not None and dynamics is not None
 
+        # ── Semilla reproducible por episodio (si se configuró base_seed) ─────
+        # Misma semilla → mismo layout de paquetes y misma dinámica para los 3
+        # sistemas, permitiendo una comparación estadística justa (protocolo §2).
+        ep_seed = (base_seed + episode) if base_seed is not None else None
+
         # ── ML: predecir zonas de alta demanda e inyectarlas en el entorno ────
         # El predictor decide dónde aparecerán los destinos de entrega ANTES de
         # que los agentes (DQN/A*) planifiquen sus acciones para este episodio.
         demand_zones = _predicted_demand_zones(episode)
-        obs, _  = env.reset(options={"demand_zones": demand_zones})
-        dynamics.reset()
+        obs, _  = env.reset(seed=ep_seed, options={"demand_zones": demand_zones})
+        dynamics.reset(seed=ep_seed)
         if bridge:
             bridge.reset_intervention_count()
 
@@ -724,6 +751,15 @@ async def _training_loop(system: str, max_episodes: int) -> None:
                         "winds":  dyn["num_active_winds"],
                         "nfzs":   dyn["num_dynamic_nfzs"],
                     },
+                    # Celdas/regiones reales para que el mapa pinte NFZ y tormentas en vivo.
+                    # NFZ: lista de [x,y] (capada para no inflar el payload).
+                    # Tormentas: rectángulos {x_range,y_range} que DroneMap renderea.
+                    "no_fly_zones": [list(c) for c in env.no_fly_zones[:400]],
+                    "storm_regions": [
+                        {"x_range": list(z["x_range"]), "y_range": list(z["y_range"])}
+                        for z in env.climate_zones.values()
+                        if z.get("type") == "storm"
+                    ],
                     "symbolic_mask": last_masks_json[0] if last_masks_json else None,
                 })
                 await asyncio.sleep(0)  # ceder el event loop

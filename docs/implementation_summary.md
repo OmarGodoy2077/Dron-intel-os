@@ -143,8 +143,13 @@ Diagnóstico: con el costo de batería previo (0.75/move) los drones morían en 
 ### 9. Persistencia de entrenamiento (checkpoints) (2026-05-20)
 Los pesos DQN, optimizer, ε y `learn_step` se guardan en `data/checkpoints/{system}_drone_{i}.pt` al terminar el loop. El entrenamiento admite `mode=resume` (carga checkpoints → continúa con conocimiento previo) o `mode=scratch` (pesos nuevos, ε=1.0). El histórico de métricas (`MetricsCollector`) se carga automáticamente del CSV al arrancar. Endpoints: `GET /training/status` (qué hay guardado por sistema) y `POST /training/delete-data` (borrado total o por sistema, bloqueado durante entrenamiento activo). A* no persiste (no aprende).
 
+### 11. Reproducibilidad, reporte estadístico y visualización de hazards (2026-05-20)
+- **Semilla reproducible:** `POST /training/start?seed=N` propaga `seed+episodio` a `env.reset()` y `dynamics.reset()`, dando condiciones idénticas (layout de paquetes + secuencia de eventos) a los 3 sistemas → comparación justa (protocolo §2). `DynamicsEngine.reset(seed)` reinicializa su RNG. Toggle "Semilla fija" en el `ControlPanel`.
+- **Reporte experimental:** `MetricsCollector.get_experimental_report()` → media±σ, **IC 95 %**, mejor entrega, episodio de convergencia, totales de violaciones/colisiones por sistema. Expuesto en `GET /metrics/report` y renderizado como tabla en la pestaña *Histórico*. `get_learning_curve()` añade `reward_smooth` (media móvil) para evidenciar la tendencia asintótica.
+- **Hazards en vivo:** el broadcast `step_update` incluye `no_fly_zones` (celdas) y `storm_regions` (rectángulos); `DroneMap` los pinta en tiempo real (antes recibía arrays vacíos).
+
 ### 10. Suite de tests y hardening de `rules.pl` (2026-05-20)
-Suite `tests/` (113 tests, `pytest tests` → 113 passed) con `conftest.py` que añade `backend/` a `sys.path` (mismos imports que producción) y detección automática de Prolog (los tests marcados `prolog` se omiten si SWI-Prolog no está, en vez de fallar). Al escribir los tests del bridge se detectó un **bug latente de robustez**: los predicados de `rules.pl` incluían `format/2` (logging) como último goal de la conjunción, así que si stdout no era escribible (captura de pytest, ciertos despliegues) el `format` fallaba y **toda la regla fallaba en silencio** → el masking dejaba de bloquear. Corrección: envolver los 20 `format/2` en `ignore/1`, separando logging de lógica. Verificado que el masking de la app real no cambia (NFZ sigue bloqueando). Decisión de alcance: la convergencia plena del DQN se valida con corridas largas documentadas en el checklist, no en la suite (sería lenta y estocástica); los tests de integración verifican que el **mecanismo** de aprendizaje funciona (gradiente fluye, Q-values se actualizan, ε decae).
+Suite `tests/` (116 tests, `pytest tests` → 116 passed) con `conftest.py` que añade `backend/` a `sys.path` (mismos imports que producción) y detección automática de Prolog (los tests marcados `prolog` se omiten si SWI-Prolog no está, en vez de fallar). Al escribir los tests del bridge se detectó un **bug latente de robustez**: los predicados de `rules.pl` incluían `format/2` (logging) como último goal de la conjunción, así que si stdout no era escribible (captura de pytest, ciertos despliegues) el `format` fallaba y **toda la regla fallaba en silencio** → el masking dejaba de bloquear. Corrección: envolver los 20 `format/2` en `ignore/1`, separando logging de lógica. Verificado que el masking de la app real no cambia (NFZ sigue bloqueando). Decisión de alcance: la convergencia plena del DQN se valida con corridas largas documentadas en el checklist, no en la suite (sería lenta y estocástica); los tests de integración verifican que el **mecanismo** de aprendizaje funciona (gradiente fluye, Q-values se actualizan, ε decae).
 
 ---
 
@@ -169,7 +174,7 @@ Suite `tests/` (113 tests, `pytest tests` → 113 passed) con `conftest.py` que 
 | useSocket hook | ✅ | Reconexión automática |
 | Entrenamiento multi-sistema | ✅ | DQN convergente (entregas 0→4/10); persistencia resume/scratch + borrado |
 | Persistencia de checkpoints | ✅ | `data/checkpoints/`; modos resume/scratch; `/training/status` y `/training/delete-data` |
-| Tests unitarios | ✅ | Suite `tests/` con 113 tests (env, DQN, A*, dinámica, métricas, ML, bridge); `pytest tests` → 113 passed; cobertura backend ≈65% |
+| Tests unitarios | ✅ | Suite `tests/` con 116 tests (env, DQN, A*, dinámica, métricas, ML, bridge); `pytest tests` → 116 passed; cobertura backend ≈65% |
 | Docker/deployment | 📋 | Pendiente |
 | Frontend routing/App.tsx | 📋 | Componentes listos, falta composición |
 

@@ -106,11 +106,16 @@ class DynamicsEngine:
         self.current_step += 1
         return self.get_state()
 
-    def reset(self) -> None:
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reinicia los eventos activos. Si se da `seed`, reinicializa el RNG
+        para que la secuencia estocástica de eventos sea reproducible."""
         self.active_storms.clear()
         self.active_winds.clear()
         self.dynamic_nfzs.clear()
         self.current_step = 0
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+            random.seed(seed)  # _spawn_wind usa random.choice para la dirección
 
     def get_state(self) -> Dict:
         storm_regions = {s.region_id: s.to_dict() for s in self.active_storms}

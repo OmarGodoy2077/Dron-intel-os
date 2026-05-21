@@ -75,7 +75,25 @@ class TestAnalytics:
             mc.record_episode(_record(ep, delivered=ep % 10, total=10))
         df = mc.get_learning_curve("dqn", metric="success_rate")
         assert "rolling_avg" in df.columns
+        assert "reward_smooth" in df.columns  # tendencia de convergencia
         assert len(df) == 30
+
+    def test_experimental_report_statistics(self, tmp_path):
+        mc = MetricsCollector(log_path=str(tmp_path / "logs.csv"))
+        for ep in range(20):
+            mc.record_episode(_record(ep, system="dqn", reward=float(ep * 5), delivered=ep % 11, total=10))
+            mc.record_episode(_record(ep, system="neuro_dqn", reward=float(ep * 6), delivered=(ep % 11), total=10))
+        rep = mc.get_experimental_report()
+        assert "dqn" in rep["systems"] and "neuro_dqn" in rep["systems"]
+        dqn = rep["systems"]["dqn"]
+        # Estructura estadística completa
+        for key in ("n_episodes", "reward_mean", "reward_std", "reward_ci95",
+                    "success_rate_mean", "best_deliveries", "convergence_episode"):
+            assert key in dqn
+        assert dqn["n_episodes"] == 20
+        # El IC95% debe ser un intervalo [low, high] con low <= high
+        lo, hi = dqn["reward_ci95"]
+        assert lo <= hi
 
     def test_comparison_table_per_system(self, tmp_path):
         mc = MetricsCollector(log_path=str(tmp_path / "logs.csv"))
