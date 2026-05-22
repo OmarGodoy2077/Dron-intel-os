@@ -463,6 +463,7 @@ class CyberCityEnv(gym.Env):
                 self.package_delivered[pi]    = True
                 self.drone_cargos[drone_idx]  = None
                 info["delivery"]              = True
+                info["pkg_type"]              = pkg_type
 
         # ── Aplicar cambios de estado ────────────────────────────────────────
         self.drone_positions[drone_idx] = [nx, ny, nz]

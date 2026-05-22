@@ -50,6 +50,18 @@ export interface StormRegion {
   y_range: [number, number];
 }
 
+export interface DeliveryTarget {
+  x: number;
+  y: number;
+  type: "medical" | "standard";
+}
+
+export interface DroneCargo {
+  pkg: number;
+  type: "medical" | "standard";
+  dest: [number, number];
+}
+
 export interface StepUpdateMsg {
   type: "step_update";
   episode: number;
@@ -62,7 +74,26 @@ export interface StepUpdateMsg {
   dynamics: DynamicsState;
   no_fly_zones?: number[][];
   storm_regions?: StormRegion[];
+  delivery_targets?: DeliveryTarget[];
+  cargos?: (DroneCargo | null)[];
+  deliveries_done?: number;
   symbolic_mask: number[] | null;
+}
+
+export interface DeliveryEvent {
+  drone: number;
+  x: number;
+  y: number;
+  pkg_type: "medical" | "standard";
+}
+
+export interface DeliveryMsg {
+  type: "delivery";
+  episode: number;
+  step: number;
+  system: string;
+  deliveries: DeliveryEvent[];
+  total: number;
 }
 
 export interface EpisodeCompleteMsg {

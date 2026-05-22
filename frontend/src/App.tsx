@@ -20,6 +20,9 @@ import {
   RawLogEntry,
   StormRegion,
   ExperimentalReport,
+  DeliveryTarget,
+  DroneCargo,
+  DeliveryMsg,
 } from "./types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -95,6 +98,27 @@ function useUptime(): string {
   return uptime;
 }
 
+// ─── Delivery visualization types ─────────────────────────────────────────────
+
+// Estallido de entrega animado en el mapa (vida corta, identificado por id único).
+export interface DeliveryBurst {
+  id: number;
+  x: number;
+  y: number;
+  type: "medical" | "standard";
+}
+
+// Entrada del feed de entregas recientes (panel lateral).
+interface DeliveryFeedItem {
+  id: number;
+  drone: number;
+  type: "medical" | "standard";
+  episode: number;
+  step: number;
+}
+
+let _burstSeq = 0;   // contador monotónico para ids de estallidos/feed
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -115,6 +139,10 @@ export default function App() {
   const [demandZones, setDemandZones] = useState<[number, number][]>([]);
   const [noFlyZones, setNoFlyZones] = useState<[number, number][]>([]);
   const [stormRegions, setStormRegions] = useState<StormRegion[]>([]);
+  const [deliveryTargets, setDeliveryTargets] = useState<DeliveryTarget[]>([]);
+  const [cargos, setCargos] = useState<(DroneCargo | null)[]>([]);
+  const [deliveryBursts, setDeliveryBursts] = useState<DeliveryBurst[]>([]);
+  const [deliveryFeed, setDeliveryFeed] = useState<DeliveryFeedItem[]>([]);
   const [activeTab, setActiveTab] = useState("operaciones");
   const [compareData, setCompareData] = useState<Record<string, unknown> | null>(null);
   const [report, setReport] = useState<ExperimentalReport | null>(null);
@@ -173,6 +201,8 @@ export default function App() {
       if (m.dynamics) setDynamics(m.dynamics);
       if (Array.isArray(m.no_fly_zones)) setNoFlyZones(m.no_fly_zones as [number, number][]);
       if (Array.isArray(m.storm_regions)) setStormRegions(m.storm_regions);
+      if (Array.isArray(m.delivery_targets)) setDeliveryTargets(m.delivery_targets);
+      if (Array.isArray(m.cargos)) setCargos(m.cargos);
       setTraining((prev) => ({
         ...prev,
         isTraining:     true,
@@ -209,6 +239,23 @@ export default function App() {
         system:         m.system as TrainingState["system"],
         currentEpisode: m.episode,
       }));
+    } else if (t === "delivery") {
+      const m = msg as DeliveryMsg;
+      const bursts: DeliveryBurst[] = [];
+      const feed: DeliveryFeedItem[] = [];
+      m.deliveries.forEach((d) => {
+        const id = ++_burstSeq;
+        bursts.push({ id, x: d.x, y: d.y, type: d.pkg_type });
+        feed.push({ id, drone: d.drone, type: d.pkg_type, episode: m.episode, step: m.step });
+      });
+      // Activar estallidos; se auto-eliminan tras la animación (1.2s).
+      setDeliveryBursts((prev) => [...prev, ...bursts]);
+      bursts.forEach((b) => {
+        setTimeout(() => {
+          setDeliveryBursts((prev) => prev.filter((x) => x.id !== b.id));
+        }, 1200);
+      });
+      setDeliveryFeed((prev) => [...feed.reverse(), ...prev].slice(0, 12));
     } else if (t === "training_complete") {
       const m = msg as TrainingCompleteMsg;
       setTraining((prev) => ({ ...prev, isTraining: false, system: m.system as TrainingState["system"] }));
@@ -236,6 +283,8 @@ export default function App() {
           if (mode === "scratch") {
             setEpHistory([]);
             setSymLogs([]);
+            setDeliveryFeed([]);
+            setDeliveryBursts([]);
           }
         }
       })
@@ -383,6 +432,9 @@ export default function App() {
                 noFlyZones={noFlyZones}
                 stormRegions={stormRegions}
                 demandZones={demandZones}
+                deliveryTargets={deliveryTargets}
+                cargos={cargos}
+                deliveryBursts={deliveryBursts}
               />
             </div>
           </>
@@ -405,6 +457,9 @@ export default function App() {
           <Kpi label="Violaciones" value={violations} sub="último ep." />
           <Kpi label="Epsilon ε"   value={epsilonKpi} accent={P.warn}  sub="exploración" />
         </div>
+
+        {/* Feed de entregas recientes */}
+        <DeliveryFeedPanel feed={deliveryFeed} />
 
         {/* Live charts */}
         <LiveStats
@@ -910,7 +965,7 @@ function ConfigView({ health, training }: ConfigViewProps) {
     { k: "Batería recarga",  v: "+25%/step en estación" },
     { k: "Max steps/ep",     v: "500" },
     { k: "Predictor demanda", v: health?.ml_ok ? "✓ GBR activo (sesga destinos)" : "✗ Offline" },
-    { k: "Suite de tests",   v: "116 tests · pytest /tests" },
+    { k: "Suite de tests",   v: "117 tests · pytest /tests" },
     { k: "Sistema activo",   v: training.system.toUpperCase() },
   ];
 
@@ -1098,6 +1153,60 @@ function Kpi({ label, value, accent, sub }: KpiProps) {
         {value}
       </div>
       {sub && <div style={{ fontSize: 10, color: "rgba(148,163,184,0.45)", fontFamily: P.mono }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ─── DeliveryFeedPanel ────────────────────────────────────────────────────────
+
+function DeliveryFeedPanel({ feed }: { feed: { id: number; drone: number; type: "medical" | "standard"; episode: number; step: number }[] }) {
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.015)",
+      border: `1px solid ${P.border}`,
+      borderRadius: 10, padding: "10px 12px",
+    }}>
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        fontSize: 9.5, letterSpacing: "0.12em", textTransform: "uppercase",
+        color: "rgba(148,163,184,0.6)", marginBottom: 8,
+      }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 4, height: 4, background: P.ok, borderRadius: "50%", display: "inline-block" }} />
+          Entregas recientes
+        </span>
+        <span style={{ color: P.ok, fontFamily: P.mono }}>{feed.length}</span>
+      </div>
+      {feed.length === 0 ? (
+        <div style={{ fontSize: 10, color: "rgba(148,163,184,0.4)", fontFamily: P.mono, padding: "4px 0" }}>
+          Aún sin entregas — inicia el entrenamiento.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 132, overflowY: "auto" }}>
+          {feed.map((d) => {
+            const med = d.type === "medical";
+            return (
+              <div key={d.id} style={{
+                display: "flex", alignItems: "center", gap: 8,
+                fontSize: 10.5, fontFamily: P.mono,
+                padding: "4px 7px", borderRadius: 5,
+                background: med ? "rgba(244,114,182,0.08)" : "rgba(16,185,129,0.06)",
+                border: `1px solid ${med ? "rgba(244,114,182,0.25)" : "rgba(16,185,129,0.2)"}`,
+                animation: "fadeSlideIn 0.4s ease",
+              }}>
+                <span style={{ fontSize: 12 }}>{med ? "🚑" : "📦"}</span>
+                <span style={{ color: med ? "#f472b6" : P.ok, fontWeight: 600 }}>
+                  {med ? "Médico" : "Estándar"}
+                </span>
+                <span style={{ color: P.muted }}>· Dron {d.drone}</span>
+                <span style={{ marginLeft: "auto", color: "rgba(148,163,184,0.5)" }}>
+                  ep{d.episode}·s{d.step}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

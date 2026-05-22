@@ -629,6 +629,7 @@ async def _training_loop(
 
             actions: List[int]    = []
             masks_json: List[Any] = []
+            step_deliveries: List[Dict[str, Any]] = []  # entregas ocurridas en este step
 
             # Consulta al bridge solo cuando epsilon es bajo (explotación) y en el throttle.
             # Durante exploración alta (ε > 0.5) las acciones son aleatorias de todas formas,
@@ -732,8 +733,31 @@ async def _training_loop(
                 ep_violations       += info.get("rule_violations", 0)
                 ep_battery_failures += 1 if bool(dones[i]) else 0
 
+                # Capturar eventos de entrega para animarlos en el frontend.
+                # La entrega ocurre en la celda actual del dron (= destino del paquete).
+                if info.get("delivery"):
+                    dpos = env.drone_positions[i]
+                    step_deliveries.append({
+                        "drone":     i,
+                        "x":         int(dpos[0]),
+                        "y":         int(dpos[1]),
+                        "pkg_type":  info.get("pkg_type", "standard"),
+                    })
+
             obs = next_obs
             last_masks_json = masks_json
+
+            # ── Broadcast inmediato de entregas (no esperar al throttle de 25) ──
+            if step_deliveries:
+                await manager.broadcast({
+                    "type":       "delivery",
+                    "episode":    episode,
+                    "step":       step,
+                    "system":     system,
+                    "deliveries": step_deliveries,
+                    "total":      int(env.package_delivered.sum()),
+                })
+                step_deliveries = []
 
             # ── Broadcast cada 25 steps ──────────────────────────────────────
             if step % 25 == 0:
@@ -760,6 +784,30 @@ async def _training_loop(
                         for z in env.climate_zones.values()
                         if z.get("type") == "storm"
                     ],
+                    # Destinos de entrega pendientes (objetivo de cada paquete sin entregar)
+                    # con su tipo, para que el mapa muestre adónde van las entregas.
+                    "delivery_targets": [
+                        {
+                            "x":    int(env.package_destinations[p, 0]),
+                            "y":    int(env.package_destinations[p, 1]),
+                            "type": env.package_types[p],
+                        }
+                        for p in range(env.num_packages)
+                        if not env.package_delivered[p]
+                    ],
+                    # Carga actual por dron: índice del paquete y su destino (para la línea guía).
+                    "cargos": [
+                        None if env.drone_cargos[i] is None else {
+                            "pkg":  int(env.drone_cargos[i]),
+                            "type": env.package_types[env.drone_cargos[i]],
+                            "dest": [
+                                int(env.package_destinations[env.drone_cargos[i], 0]),
+                                int(env.package_destinations[env.drone_cargos[i], 1]),
+                            ],
+                        }
+                        for i in range(env.num_drones)
+                    ],
+                    "deliveries_done": int(env.package_delivered.sum()),
                     "symbolic_mask": last_masks_json[0] if last_masks_json else None,
                 })
                 await asyncio.sleep(0)  # ceder el event loop

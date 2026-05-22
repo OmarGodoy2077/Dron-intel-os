@@ -95,6 +95,22 @@ class TestStep:
         small_env.step(np.array([6] * small_env.num_drones))
         assert small_env.current_step == before + 1
 
+    def test_delivery_info_reports_type_and_location(self):
+        """Al entregar, info expone delivery=True y pkg_type (para animar en el frontend)."""
+        env = CyberCityEnv(grid_size=20, num_drones=1, num_packages=1, max_steps=50)
+        env.reset(seed=1)
+        # Forzar: el dron lleva el paquete 0 y está sobre su destino, luego 'esperar'
+        env.drone_cargos[0] = 0
+        env.package_picked[0] = True
+        env.package_types[0] = "medical"
+        dest = env.package_destinations[0]
+        env.drone_positions[0] = [int(dest[0]), int(dest[1]), 0]
+        _, _, _, _, infos = env.step(np.array([6]))  # esperar (no mueve, entrega in situ)
+        info = infos["drone_0"]
+        assert info.get("delivery") is True
+        assert info.get("pkg_type") == "medical"
+        assert env.package_delivered[0]
+
 
 # ── Fórmula de recompensa R_total ─────────────────────────────────────────────
 
