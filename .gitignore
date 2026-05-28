@@ -45,3 +45,14 @@ Thumbs.db
 # data/checkpoints/
 # data/training_logs.csv
 data/debug_*.csv
+
+#ignore claudedata/claude/
+.claudedata/claude/
+claude/
+.claude/.
+.claude
+
+
+
+
+
