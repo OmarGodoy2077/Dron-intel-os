@@ -53,33 +53,42 @@ class MetricsCollector:
     def __init__(self, log_path: str = "data/training_logs.csv") -> None:
         self.log_path = log_path
         self._df: pd.DataFrame = pd.DataFrame(columns=COLUMNS)
+        # Pending rows accumulated between saves — flushed to _df on save() or
+        # when an analytics query forces a flush. Using a list avoids the O(n²)
+        # cost of pd.concat on every episode.
+        self._pending: List[Dict] = []
         self._load()
+
+    def _flush_pending(self) -> None:
+        if not self._pending:
+            return
+        new_rows = pd.DataFrame(self._pending, columns=COLUMNS)
+        self._df = pd.concat([self._df, new_rows], ignore_index=True)
+        self._pending.clear()
 
     # ------------------------------------------------------------------ #
     #  Ingestion                                                           #
     # ------------------------------------------------------------------ #
 
     def record_episode(self, record: EpisodeRecord) -> None:
-        row = {
-            "episode": record.episode,
-            "system": record.system,
-            "total_reward": record.total_reward,
-            "deliveries_completed": record.deliveries_completed,
-            "deliveries_total": record.deliveries_total,
-            "success_rate": record.success_rate,
-            "rule_violations": record.rule_violations,
-            "collisions": record.collisions,
-            "battery_failures": record.battery_failures,
-            "steps": record.steps,
+        self._pending.append({
+            "episode":               record.episode,
+            "system":                record.system,
+            "total_reward":          record.total_reward,
+            "deliveries_completed":  record.deliveries_completed,
+            "deliveries_total":      record.deliveries_total,
+            "success_rate":          record.success_rate,
+            "rule_violations":       record.rule_violations,
+            "collisions":            record.collisions,
+            "battery_failures":      record.battery_failures,
+            "steps":                 record.steps,
             "avg_battery_remaining": record.avg_battery_remaining,
             "symbolic_interventions": record.symbolic_interventions,
-            "timestamp": record.timestamp,
-        }
-        self._df = pd.concat(
-            [self._df, pd.DataFrame([row])], ignore_index=True
-        )
+            "timestamp":             record.timestamp,
+        })
 
     def save(self) -> None:
+        self._flush_pending()
         os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
         self._df.to_csv(self.log_path, index=False)
 
@@ -100,6 +109,7 @@ class MetricsCollector:
         Returns:
             Número de filas eliminadas.
         """
+        self._flush_pending()
         before = len(self._df)
         if system is None:
             self._df = pd.DataFrame(columns=COLUMNS)
@@ -112,8 +122,10 @@ class MetricsCollector:
     def count(self, system: Optional[str] = None) -> int:
         """Número de episodios registrados (opcionalmente por sistema)."""
         if system is None:
-            return len(self._df)
-        return int((self._df["system"] == system).sum())
+            return len(self._df) + len(self._pending)
+        return int((self._df["system"] == system).sum()) + sum(
+            1 for r in self._pending if r["system"] == system
+        )
 
     # ------------------------------------------------------------------ #
     #  Analytics                                                           #
@@ -122,6 +134,7 @@ class MetricsCollector:
     def get_summary(
         self, system: Optional[str] = None, last_n: int = 100
     ) -> Dict:
+        self._flush_pending()
         df = self._df if system is None else self._df[self._df["system"] == system]
         df = df.tail(last_n)
         if df.empty:
@@ -148,6 +161,7 @@ class MetricsCollector:
         return None
 
     def get_comparison_table(self) -> pd.DataFrame:
+        self._flush_pending()
         rows = []
         for system in self._df["system"].unique():
             summary = self.get_summary(system=system, last_n=200)
@@ -160,6 +174,7 @@ class MetricsCollector:
     def get_learning_curve(
         self, system: str, metric: str = "success_rate"
     ) -> pd.DataFrame:
+        self._flush_pending()
         df = (
             self._df[self._df["system"] == system][["episode", metric]]
             .copy()
@@ -181,6 +196,7 @@ class MetricsCollector:
           y totales de violaciones/colisiones. Apto para la sección de resultados
           del reporte técnico (Criterio 10).
         """
+        self._flush_pending()
         report: Dict = {"systems": {}, "generated_episodes": int(len(self._df))}
         for system in sorted(self._df["system"].dropna().unique()):
             d = self._df[self._df["system"] == system]
@@ -212,6 +228,7 @@ class MetricsCollector:
 
     def to_live_json(self, system: str, last_n: int = 50) -> Dict:
         """Compact format consumed by the LiveStats WebSocket broadcast."""
+        self._flush_pending()
         df = self._df[self._df["system"] == system].tail(last_n)
         return {
             "episodes":              df["episode"].tolist(),

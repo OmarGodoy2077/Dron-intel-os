@@ -9,7 +9,9 @@
 1.  **Inteligencia Adaptativa (Instinto):** Un modelo de **Aprendizaje por Refuerzo Profundo (Double Deep Q-Network)** permite que cada dron aprenda de forma autónoma las rutas más eficientes a través de la experiencia, optimizando entregas y consumo de energía por ensayo y error.
 2.  **Conocimiento Experto (Conciencia):** Un **motor de lógica simbólica (Prolog)** actúa como un supervisor, aplicando un conjunto de 12 reglas estrictas que garantizan la seguridad y el cumplimiento de normativas. Este motor previene colisiones, evita zonas prohibidas y gestiona emergencias como la batería baja.
 
-La sinergia de estos dos pilares crea un "enjambre inteligente" (Smart-Swarm) que no solo es eficiente, sino también inherentemente seguro. El sistema neuro-simbólico logra **cero violaciones de seguridad** por diseño (gracias al filtrado de acciones de Prolog) y converge hacia una alta tasa de éxito en sus entregas de forma más estable que un sistema puramente basado en aprendizaje.
+La sinergia de estos dos pilares crea un "enjambre inteligente" (Smart-Swarm) que no solo aprende a entregar, sino que lo hace bajo restricciones de seguridad explícitas. El motor Prolog aplica **action masking** que bloquea las acciones peligrosas (zonas prohibidas, colisiones inminentes, vuelo en tormenta, batería crítica) *antes* de que se ejecuten, y **reward shaping** que guía la coordinación multi-agente.
+
+> **Nota sobre resultados:** En el experimento real de 200 episodios (ver [entregables/](entregables/)), Neuro-DQN y DQN puro alcanzan una tasa de éxito final **estadísticamente equivalente** (~39%). La ventaja del Neuro-DQN es **cualitativa**: arranque de aprendizaje más rápido, garantías de seguridad por masking, coordinación explícita y trazabilidad de cada decisión. Las cifras de este README provienen directamente de `data/training_logs.csv` y la API `/metrics/comparison`.
 
 ---
 
@@ -27,9 +29,14 @@ La sinergia de estos dos pilares crea un "enjambre inteligente" (Smart-Swarm) qu
 ## 3. Inicio Rápido
 
 ### Requisitos Previos
-- Python 3.10+
-- Node.js 18+
-- SWI-Prolog (asegúrate de que el ejecutable `swipl` esté en el PATH del sistema).
+- **Python 3.10+** (probado en 3.12)
+- **Node.js 18+** (probado en 22)
+- **SWI-Prolog** — necesario **solo** para el modo Neuro-DQN. El backend arranca igualmente sin él (`/health` devuelve `symbolic_ok: false`) y los modos A* y DQN puro funcionan; el modo Neuro-DQN queda deshabilitado.
+  - Windows: `winget install SWI-Prolog.SWI-Prolog`
+  - Linux: `sudo apt install swi-prolog`
+  - macOS: `brew install swi-prolog`
+
+> El repositorio incluye **checkpoints pre-entrenados** en `data/checkpoints/` y los logs del experimento en `data/training_logs.csv`, de modo que las gráficas y métricas se ven sin necesidad de re-entrenar.
 
 ### Pasos para la Ejecución
 
@@ -62,6 +69,15 @@ La sinergia de estos dos pilares crea un "enjambre inteligente" (Smart-Swarm) qu
     curl -X POST "http://localhost:8000/training/start?system=neuro_dqn&episodes=200"
     ```
 
+### Ejecutar las pruebas
+
+La suite (117 tests) se ejecuta desde la **raíz del proyecto**:
+
+```bash
+pip install -r backend/requirements.txt   # incluye pytest
+pytest -q
+```
+
 ---
 
 ## 4. Arquitectura del Sistema
@@ -85,7 +101,9 @@ dron-intel-os/
 │   │   └── App.tsx      # Componente principal que orquesta la UI
 │   └── vite.config.ts   # Configuración del servidor de desarrollo (incluye proxy al backend)
 ├── docs/                # Documentación detallada sobre modelos, protocolos y reglas
-└── data/                # Datos generados por las simulaciones (logs, métricas)
+├── entregables/         # Informes académicos: modelado matemático, resultados y comparación
+├── tests/               # Suite de pruebas (pytest, 117 tests)
+└── data/                # Checkpoints pre-entrenados + logs/métricas de simulación
 ```
 
 ### ¿Cómo funciona?
@@ -159,13 +177,14 @@ Ver [docs/formal_modeling.md](docs/formal_modeling.md) para la derivación compl
 
 ## Experimento Comparativo
 
-Ver [docs/experimental_protocol.md](docs/experimental_protocol.md).
+Protocolo en [docs/experimental_protocol.md](docs/experimental_protocol.md). Resultados reales (200 episodios/modelo, `data/training_logs.csv`) detallados en [entregables/04_comparacion_modelos.md](entregables/04_comparacion_modelos.md).
 
-| Sistema | Éxito esperado | Violaciones | Colisiones |
-|---|---|---|---|
-| A* | ~65% | ~5% | ~2/ep |
-| DQN puro | ~75% | ~15% | ~3/ep |
-| **Neuro-DQN** | **~92%** | **0%** | **0** |
+| Sistema | Tasa de éxito | Recompensa media | Violaciones/ep. | Colisiones/ep. |
+|---|---|---|---|---|
+| DQN puro | 39.3% | −1,571.3 | 42.6 | 0.68 |
+| **Neuro-DQN** | **39.2%** | **−1,443.6** | 51.8 \* | 0.74 |
+
+\* El Neuro-DQN reporta más "violaciones" porque el motor Prolog **detecta y registra** más categorías de intervención (R4, R8, R9, R11 = reward shaping), no porque sea menos seguro. Su ventaja real está en el *masking preventivo* y el arranque de aprendizaje más rápido (ver entregable 04, §2.2 y §4).
 
 ---
 

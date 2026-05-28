@@ -18,7 +18,7 @@ API pública principal:
 import logging
 import os
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -147,12 +147,9 @@ class NeuroSymbolicBridge:
 
         Args:
             env_state: Dict producido por CyberCityEnv.get_state_dict(drone_idx).
-                       Campos: agent_id, position, battery, cargo, cargo_type,
-                               destination, no_fly_zones, charging_stations,
-                               other_agents, other_batteries, storm_regions, wind.
         """
-        # Limpiar todos los hechos dinámicos
-        for pattern in (
+        # Agrupar retractions en una sola consulta para reducir overhead PySWIP
+        patterns = [
             "agente_en_celda(_, _)",
             "bateria_agente(_, _)",
             "tormenta(_)",
@@ -164,53 +161,70 @@ class NeuroSymbolicBridge:
             "no_fly_zone(_)",
             "region_limites(_, _, _, _, _)",
             "paquete(_, _, _)",
-        ):
-            self._retract_all(pattern)
+        ]
+        retract_query = ", ".join(f"retractall({p})" for p in patterns)
+        self._query(retract_query)
+
+        # Agrupar asserts en una sola consulta para reducir overhead PySWIP
+        asserts = []
 
         # Agente principal
         agent_id = env_state["agent_id"]
         x, y, _  = env_state["position"]
         battery  = max(0, int(env_state["battery"]))
-        self._assert(f"agente_en_celda({agent_id}, celda({x},{y}))")
-        self._assert(f"bateria_agente({agent_id}, {battery})")
+        asserts.append(f"assertz(agente_en_celda({agent_id}, celda({x},{y})))")
+        asserts.append(f"assertz(bateria_agente({agent_id}, {battery}))")
 
         # Carga del dron
         if env_state.get("cargo"):
             pkg      = env_state["cargo"]
             pkg_type = env_state.get("cargo_type", "standard")
-            self._assert(f"agente_lleva_paquete({agent_id}, {pkg})")
-            self._assert(f"paquete({pkg}, {pkg_type}, normal)")
+            asserts.append(f"assertz(agente_lleva_paquete({agent_id}, {pkg}))")
+            asserts.append(f"assertz(paquete({pkg}, {pkg_type}, normal))")
 
         # Destino actual
         if env_state.get("destination"):
             dx, dy = env_state["destination"]
-            self._assert(f"agente_destino({agent_id}, celda({dx},{dy}))")
+            asserts.append(f"assertz(agente_destino({agent_id}, celda({dx},{dy})))")
 
         # No-fly zones (estáticas + dinámicas)
         for nfz in env_state.get("no_fly_zones", []):
-            self._assert(f"no_fly_zone(celda({int(nfz[0])},{int(nfz[1])}))")
+            asserts.append(f"assertz(no_fly_zone(celda({int(nfz[0])},{int(nfz[1])})))")
 
         # Regiones de tormenta → region_limites + tormenta
         for region_id, limits in env_state.get("storm_regions", {}).items():
             xmin, xmax, ymin, ymax = (int(v) for v in limits)
-            self._assert(f"region_limites({region_id},{xmin},{xmax},{ymin},{ymax})")
-            self._assert(f"tormenta({region_id})")
+            asserts.append(f"assertz(region_limites({region_id},{xmin},{xmax},{ymin},{ymax}))")
+            asserts.append(f"assertz(tormenta({region_id}))")
 
         # Viento dominante
         if env_state.get("wind"):
             direction, intensity = env_state["wind"]
-            self._assert(f"viento({direction},{int(intensity)})")
+            asserts.append(f"assertz(viento({direction},{int(intensity)}))")
 
         # Estaciones de carga
         for sid, status in env_state.get("charging_stations", {}).items():
-            self._assert(f"estacion_carga({sid},{status})")
+            asserts.append(f"assertz(estacion_carga({sid},{status}))")
 
         # Otros agentes (posición + batería)
         for other_id, pos in env_state.get("other_agents", {}).items():
             ox, oy = int(pos[0]), int(pos[1])
-            self._assert(f"agente_en_celda({other_id}, celda({ox},{oy}))")
+            asserts.append(f"assertz(agente_en_celda({other_id}, celda({ox},{oy})))")
         for other_id, bat in env_state.get("other_batteries", {}).items():
-            self._assert(f"bateria_agente({other_id}, {max(0, int(bat))})")
+            asserts.append(f"assertz(bateria_agente({other_id}, {max(0, int(bat))}))")
+
+        if asserts:
+            # Dividir asserts en lotes para no exceder posibles límites de consulta
+            batch_size = 10
+            for i in range(0, len(asserts), batch_size):
+                self._query(", ".join(asserts[i:i+batch_size]))
+
+        if not hasattr(self, '_sync_count'):
+            self._sync_count = 0
+        self._sync_count += 1
+        if self._sync_count % 500 == 0:
+            self._query("garbage_collect")
+            self._query("garbage_collect_atoms")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Validación de acciones (Action Masking — reglas R1, R2, R3, R5, R7, R12)
@@ -243,10 +257,12 @@ class NeuroSymbolicBridge:
         self,
         agent_id: str,
         action:   str,
+        cache:    Optional[Dict[str, bool]] = None,
     ) -> Tuple[bool, float]:
         """Evalúa las reglas AM sin re-sincronizar el estado (uso interno)."""
         is_valid = True
         penalty  = 0.0
+        c = cache if cache is not None else {}
 
         # R1 — Zona de vuelo prohibida
         if self._query(f"accion_invalida({agent_id}, {action})"):
@@ -256,7 +272,9 @@ class NeuroSymbolicBridge:
             self._intervention_count += 1
 
         # R2 — Batería crítica: solo cargar/aterrizar
-        if self._query(f"solo_acciones_emergencia({agent_id})"):
+        if "emergencia" not in c:
+            c["emergencia"] = bool(self._query(f"solo_acciones_emergencia({agent_id})"))
+        if c["emergencia"]:
             if action not in ("cargar", "aterrizar"):
                 is_valid = False
                 penalty += _AM_PENALTIES["R2_battery"]
@@ -271,11 +289,14 @@ class NeuroSymbolicBridge:
             self._intervention_count += 1
 
         # R5 — Estación de carga ocupada
-        if action == "cargar" and self._query(f"accion_carga_invalida({agent_id})"):
-            is_valid = False
-            penalty += _AM_PENALTIES["R5_station"]
-            self.log_decision("MASK", f"R5 Estación ocupada: {agent_id}")
-            self._intervention_count += 1
+        if action == "cargar":
+            if "carga_invalida" not in c:
+                c["carga_invalida"] = bool(self._query(f"accion_carga_invalida({agent_id})"))
+            if c["carga_invalida"]:
+                is_valid = False
+                penalty += _AM_PENALTIES["R5_station"]
+                self.log_decision("MASK", f"R5 Estación ocupada: {agent_id}")
+                self._intervention_count += 1
 
         # R7 — Tormenta activa en celda destino
         if self._query(f"accion_invalida_tormenta({agent_id}, {action})"):
@@ -317,8 +338,9 @@ class NeuroSymbolicBridge:
         self.sync_state(state)  # sincronizar UNA vez para todas las acciones
 
         mask = np.ones(N_ACTIONS, dtype=np.float32)
+        cache_eval: Dict[str, bool] = {}
         for i, action in enumerate(ACTIONS):
-            is_valid, _ = self._check_action_rules(agent_id, action)
+            is_valid, _ = self._check_action_rules(agent_id, action, cache=cache_eval)
             if not is_valid:
                 mask[i] = 0.0
 

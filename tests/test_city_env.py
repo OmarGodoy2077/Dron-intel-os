@@ -284,5 +284,6 @@ class TestStateDict:
 
     def test_blocked_cells_includes_nfz(self, small_env):
         small_env.no_fly_zones = [(1, 1), (2, 2)]
+        small_env._nfz_set = set(small_env.no_fly_zones)  # get_blocked_cells lee el cache
         blocked = small_env.get_blocked_cells()
         assert (1, 1) in blocked and (2, 2) in blocked

@@ -129,6 +129,9 @@ class CyberCityEnv(gym.Env):
         # Tracker de distancia al objetivo (para proximity reward shaping)
         self._prev_target_dist: np.ndarray = np.full(num_drones, -1.0, dtype=np.float32)
 
+        # Cache de la lista de NFZ serializada para Prolog — se invalida en apply_dynamics/reset
+        self._nfz_list_cache: Optional[List[Tuple[int, int]]] = None
+
         # Zonas de alta demanda predichas por el modelo ML (DemandPredictor).
         # Cuando se proveen en reset(), una fracción de los paquetes se genera
         # cerca de ellas → la predicción de demanda da forma a la misión que
@@ -189,6 +192,7 @@ class CyberCityEnv(gym.Env):
         self.climate_zones     = {}
         self._nfz_set          = set(self.no_fly_zones)
         self._storm_cells      = set()
+        self._nfz_list_cache   = None
 
         if self._bridge is not None:
             self._bridge.reset_intervention_count()
@@ -520,8 +524,9 @@ class CyberCityEnv(gym.Env):
         self._static_nfzs = getattr(self, "_static_nfzs", list(self.no_fly_zones))
         self.no_fly_zones  = list(set(self._static_nfzs) | set(extra_nfz))  # type: ignore[arg-type]
 
-        # Actualizar caches
+        # Actualizar caches (invalidar también la lista serializada para Prolog)
         self._nfz_set = set(self.no_fly_zones)
+        self._nfz_list_cache = None
         storm_cells: set = set()
         for zone in self.climate_zones.values():
             if zone.get("type") == "storm":
@@ -561,7 +566,7 @@ class CyberCityEnv(gym.Env):
                  int(self.package_destinations[pi, 1]))
                 if pi is not None else None
             ),
-            "no_fly_zones": [(int(nx), int(ny)) for nx, ny in self.no_fly_zones],
+            "no_fly_zones": self._get_nfz_list(),
             "charging_stations": {
                 f"station_{j}": ("ocupada" if self.charging_occupied[j] else "libre")
                 for j in range(self.num_charging_stations)
@@ -597,16 +602,9 @@ class CyberCityEnv(gym.Env):
         """Retorna todas las celdas actualmente bloqueadas (NFZ + tormentas).
 
         Usado por AStarAgent.set_obstacles() para replanning con obstáculos dinámicos.
+        Usa los caches precalculados en lugar de recalcular desde climate_zones.
         """
-        blocked = list(self.no_fly_zones)
-        for zone in self.climate_zones.values():
-            if zone.get("type") == "storm":
-                xmin, xmax = zone["x_range"]
-                ymin, ymax = zone["y_range"]
-                for sx in range(int(xmin), int(xmax) + 1):
-                    for sy in range(int(ymin), int(ymax) + 1):
-                        blocked.append((sx, sy))
-        return blocked
+        return list(self._nfz_set | self._storm_cells)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers internos
@@ -712,6 +710,12 @@ class CyberCityEnv(gym.Env):
             if int(cs[0]) == x and int(cs[1]) == y:
                 return i
         return None
+
+    def _get_nfz_list(self) -> List[Tuple[int, int]]:
+        """NFZ list cached entre llamadas Prolog del mismo step."""
+        if self._nfz_list_cache is None:
+            self._nfz_list_cache = [(int(nx), int(ny)) for nx, ny in self.no_fly_zones]
+        return self._nfz_list_cache
 
     def _spawn_package_destinations(
         self,

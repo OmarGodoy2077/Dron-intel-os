@@ -322,23 +322,31 @@ class DQNAgent(BaseAgent):
     # ──────────────────────────────────────────────────────────────────────────
 
     def save_checkpoint(self, path: str) -> None:
-        """Persiste pesos, optimizer, ε y step counter en un archivo .pt."""
+        """Persiste pesos, optimizer, ε, step counter y replay buffer en un archivo .pt."""
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        buf = self.replay_buffer
+        # Extraer solo las transiciones válidas (las posiciones no escritas son None)
+        valid = [buf._buffer[i] for i in range(buf._size)]
         torch.save(
             {
-                "agent_id":   self.agent_id,
-                "policy_net": self.policy_net.state_dict(),
-                "target_net": self.target_net.state_dict(),
-                "optimizer":  self.optimizer.state_dict(),
-                "epsilon":    self.epsilon,
-                "learn_step": self._learn_step,
+                "agent_id":    self.agent_id,
+                "policy_net":  self.policy_net.state_dict(),
+                "target_net":  self.target_net.state_dict(),
+                "optimizer":   self.optimizer.state_dict(),
+                "epsilon":     self.epsilon,
+                "learn_step":  self._learn_step,
+                "replay_buf":  valid,
+                "replay_pos":  buf._pos,
             },
             path,
         )
-        logger.info("Checkpoint guardado: %s (step=%d)", path, self._learn_step)
+        logger.info(
+            "Checkpoint guardado: %s (step=%d, buffer=%d)",
+            path, self._learn_step, buf._size,
+        )
 
     def load_checkpoint(self, path: str) -> None:
-        """Restaura el estado completo de entrenamiento desde un checkpoint."""
+        """Restaura el estado completo de entrenamiento desde un checkpoint, incluyendo el replay buffer."""
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint no encontrado: {path}")
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
@@ -347,10 +355,26 @@ class DQNAgent(BaseAgent):
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.epsilon     = ckpt.get("epsilon", self.epsilon)
         self._learn_step = ckpt.get("learn_step", 0)
-        logger.info(
-            "Checkpoint cargado: %s | ε=%.4f | step=%d",
-            path, self.epsilon, self._learn_step,
-        )
+
+        # Restaurar el replay buffer para que el entrenamiento continúe sin
+        # el calentamiento de buffer (~80 episodios) que ocurría al reanudar.
+        if "replay_buf" in ckpt:
+            buf = self.replay_buffer
+            transitions = ckpt["replay_buf"]
+            size = min(len(transitions), buf._capacity)
+            for i, t in enumerate(transitions[:size]):
+                buf._buffer[i] = t
+            buf._size = size
+            buf._pos  = ckpt.get("replay_pos", size % buf._capacity)
+            logger.info(
+                "Checkpoint cargado: %s | ε=%.4f | step=%d | buffer=%d",
+                path, self.epsilon, self._learn_step, buf._size,
+            )
+        else:
+            logger.info(
+                "Checkpoint cargado (sin buffer): %s | ε=%.4f | step=%d",
+                path, self.epsilon, self._learn_step,
+            )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Serialización

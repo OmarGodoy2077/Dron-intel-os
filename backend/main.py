@@ -591,6 +591,12 @@ async def _training_loop(
 
     logger.info("Training loop iniciado: system=%s, max_ep=%d", system, max_episodes)
 
+    # Pre-computar claves de drone para evitar f-string en cada step×drone
+    _drone_keys = [f"drone_{i}" for i in range(NUM_DRONES)]
+    _is_dqn_system = system in ("dqn", "neuro_dqn")
+    _is_neuro = system == "neuro_dqn"
+    _is_astar = system == "astar"
+
     for episode in range(max_episodes):
         if not training_active:
             break
@@ -636,10 +642,14 @@ async def _training_loop(
             # por lo que el overhead de Prolog es puro desperdicio.
             agent_epsilon = getattr(agents[0], "epsilon", 0.0) if agents else 0.0
             consult_bridge_mask = (
-                system == "neuro_dqn" and bridge is not None
+                _is_neuro and bridge is not None
                 and step % SYMBOLIC_MASK_EVERY == 0
                 and agent_epsilon <= 0.5
             )
+
+            # Obstáculos A* se calculan una sola vez por step (no por drone)
+            if _is_astar:
+                _blocked_cells = env.get_blocked_cells()
 
             # ── Selección de acción por cada agente ──────────────────────────
             for i, agent in enumerate(agents):
@@ -647,26 +657,24 @@ async def _training_loop(
                     actions.append(6)  # esperar
                     continue
 
-                state_vec = obs[f"drone_{i}"]
+                state_vec = obs[_drone_keys[i]]
                 mask: Optional[np.ndarray] = None
 
-                if system == "astar":
-                    # AStarAgent necesita objetivo y obstáculos actualizados
+                if _is_astar:
                     astar_agent: AStarAgent = agent  # type: ignore[assignment]
                     astar_agent.set_target(_get_astar_target(env, i))
                     astar_agent.set_obstacles(
                         env.no_fly_zones,
-                        storm_cells=env.get_blocked_cells(),
+                        storm_cells=_blocked_cells,
                     )
 
-                elif system in ("dqn", "neuro_dqn"):
+                elif _is_dqn_system:
                     # Mask rápido vectorizado (R1, R3, R5, R7, R2) — sin Prolog
-                    # DQN puro también necesita masking para evitar violaciones NFZ/cargar
                     mask = env.fast_action_mask(i)
                     # Refinar con Prolog ocasionalmente (R11, R12) — solo neuro_dqn
-                    if system == "neuro_dqn" and consult_bridge_mask:
+                    if _is_neuro and consult_bridge_mask:
                         state_dict = env.get_state_dict(i)
-                        prolog_mask = bridge.get_action_mask(f"drone_{i}", state_dict)  # type: ignore[union-attr]
+                        prolog_mask = bridge.get_action_mask(_drone_keys[i], state_dict)  # type: ignore[union-attr]
                         mask = mask * prolog_mask  # AND lógico
                         if float(mask.sum()) == 0.0:
                             mask = env.fast_action_mask(i)  # fail-safe
@@ -683,22 +691,24 @@ async def _training_loop(
             # Reward shaping simbólico solo cada SYMBOLIC_REWARD_EVERY steps
             # y solo en fase de explotación (ε ≤ 0.5); en exploración es irrelevante.
             apply_symbolic_reward = (
-                system == "neuro_dqn" and bridge is not None
+                _is_neuro and bridge is not None
                 and step % SYMBOLIC_REWARD_EVERY == 0
                 and agent_epsilon <= 0.5
             )
+            do_learn = _is_dqn_system and (step % 4 == 0)
 
             for i, agent in enumerate(agents):
                 if not env.drone_alive[i]:
                     continue
 
+                dk = _drone_keys[i]
                 r = float(rewards[i])
 
                 # Reward shaping simbólico (throttled)
                 if apply_symbolic_reward:
                     state_dict = env.get_state_dict(i)
                     r += bridge.get_reward_modifier(  # type: ignore[union-attr]
-                        agent_id=f"drone_{i}",
+                        agent_id=dk,
                         state=state_dict,
                         action=ENV_ACTIONS[actions[i]],
                     )
@@ -708,19 +718,19 @@ async def _training_loop(
                     next_mask = env.fast_action_mask(i)
                     if consult_bridge_mask:
                         state_dict_next = env.get_state_dict(i)
-                        prolog_mask_next = bridge.get_action_mask(f"drone_{i}", state_dict_next)  # type: ignore[union-attr]
+                        prolog_mask_next = bridge.get_action_mask(dk, state_dict_next)  # type: ignore[union-attr]
                         next_mask = next_mask * prolog_mask_next
                 except Exception:
                     next_mask = None
 
                 agent.remember(
-                    obs[f"drone_{i}"], actions[i], r,
-                    next_obs[f"drone_{i}"], bool(dones[i]),
+                    obs[dk], actions[i], r,
+                    next_obs[dk], bool(dones[i]),
                     next_mask=next_mask,
                 )
                 # Throttle learn() — cada 4 steps en lugar de cada step.
                 # Reduce 75% el costo de gradiente sin afectar convergencia.
-                if step % 4 == 0:
+                if do_learn:
                     learn_info = agent.learn()
                     if isinstance(learn_info, dict):
                         loss_val = learn_info.get("loss", 0.0)
@@ -728,7 +738,7 @@ async def _training_loop(
                             ep_losses.append(float(loss_val))
                 ep_reward[i] += r
 
-                info = infos[f"drone_{i}"]
+                info = infos[dk]
                 ep_collisions       += info.get("collisions", 0)
                 ep_violations       += info.get("rule_violations", 0)
                 ep_battery_failures += 1 if bool(dones[i]) else 0
@@ -840,16 +850,21 @@ async def _training_loop(
         metrics.record_episode(record)
 
         # ── Broadcast cada episodio (o cada 2 para reducir overhead) ──────────
+        avg_epsilon = float(np.mean([
+            getattr(a, "epsilon", 1.0) for a in agents
+            if hasattr(a, "epsilon")
+        ])) if agents else 1.0
+        avg_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
+
         if episode % 2 == 0:
-            metrics.save()
+            # Guardar CSV cada 10 episodios en lugar de cada 2 — los datos
+            # pending se acumulan en memoria y se persisten en bloque, mucho
+            # más barato que escribir el archivo completo en cada episodio.
+            if episode % 10 == 0:
+                metrics.save()
             symbolic_log_entries = (
                 bridge.get_log_entries(last_n=10) if bridge else []
             )
-            avg_epsilon = float(np.mean([
-                getattr(a, "epsilon", 1.0) for a in agents
-                if hasattr(a, "epsilon")
-            ])) if agents else 1.0
-            avg_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
             await manager.broadcast({
                 "type":    "episode_complete",
                 "episode": episode,
@@ -865,7 +880,8 @@ async def _training_loop(
                     "epsilon":               avg_epsilon,
                     "avg_loss":              avg_loss,
                 },
-                "summary":      metrics.get_summary(system=system, last_n=50),
+                # get_summary es caro (recorre todo el DF); se omite del broadcast
+                # por-episodio y se consulta bajo demanda vía GET /metrics/summary.
                 "symbolic_log": symbolic_log_entries,
                 "demand_zones": [list(z) for z in demand_zones],
                 "ml_active":    predictor is not None,

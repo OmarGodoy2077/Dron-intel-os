@@ -1,0 +1,47 @@
+# ─── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# ─── Testing / coverage ───────────────────────────────────
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.cache/
+
+# ─── Node / Frontend ──────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+
+# ─── Entornos / secretos ──────────────────────────────────
+.env
+.env.local
+*.local
+
+# ─── Editores / OS ────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ─── Datos generados (mantener los de ejemplo versionados) ─
+# Los checkpoints y logs base SÍ se versionan como entregable.
+# Descomentar si se quiere un repo limpio sin artefactos de entrenamiento:
+# data/checkpoints/
+# data/training_logs.csv
+data/debug_*.csv
