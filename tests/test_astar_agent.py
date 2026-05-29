@@ -102,6 +102,23 @@ class TestSelectAction:
         action = agent.select_action(state, mask)
         assert mask[action] == 1.0  # la acción devuelta es válida
 
+    def test_denormalizes_observation_position(self, agent):
+        """Regresión: el env entrega la posición NORMALIZADA (x/grid, y/grid).
+
+        Si A* hiciera int(state[0]) leería siempre 0 y creería estar en (0,0),
+        planificando desde el origen y atascándose contra un borde sin entregar.
+        Aquí el dron está en la celda (7, 2) de un grid de 10 y el objetivo está
+        al oeste: la acción correcta es 'mover_o', imposible si pensara estar en (0,0).
+        """
+        g = agent.grid_size  # 10
+        agent.set_target((2, 2))
+        agent.set_obstacles([])
+        state = np.zeros(11, dtype=np.float32)
+        state[0] = 7.0 / g   # x normalizado = 0.7  → celda 7
+        state[1] = 2.0 / g   # y normalizado = 0.2  → celda 2
+        action = agent.select_action(state)
+        assert ACTIONS[action] == "mover_o"  # debe avanzar en -x hacia (2,2)
+
 
 # ── Contrato BaseAgent (no-ops de aprendizaje) ────────────────────────────────
 

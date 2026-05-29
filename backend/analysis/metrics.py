@@ -157,7 +157,11 @@ class MetricsCollector:
         rolling = df["success_rate"].rolling(window=window, min_periods=window).mean()
         hits = rolling[rolling >= threshold]
         if not hits.empty:
-            return int(df.iloc[hits.index[0]]["episode"])
+            # hits.index[0] es la ETIQUETA de fila del primer cruce del umbral.
+            # Usar .loc (label-based), no .iloc (posicional): cuando df es un slice
+            # filtrado por sistema, las etiquetas no son contiguas desde 0 y .iloc
+            # lanzaría IndexError out-of-bounds.
+            return int(df.loc[hits.index[0], "episode"])
         return None
 
     def get_comparison_table(self) -> pd.DataFrame:

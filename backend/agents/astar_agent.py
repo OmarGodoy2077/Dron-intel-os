@@ -106,8 +106,18 @@ class AStarAgent(BaseAgent):
 
         Si la acción planificada está enmascarada por Prolog, replanifica
         añadiendo la celda bloqueada como obstáculo temporal.
+
+        El vector de observación está NORMALIZADO por CyberCityEnv
+        (state[0]=x/grid_size, state[1]=y/grid_size). A* trabaja en
+        coordenadas de celda enteras, así que des-normalizamos antes de planificar.
+        Sin esto, int(state[0]) colapsa a 0 para cualquier posición y el agente
+        cree estar siempre en (0,0): planifica desde el origen, avanza hacia un
+        borde y se queda atascado sin recoger ni entregar paquetes.
         """
-        x, y = int(state[0]), int(state[1])
+        x = int(round(float(state[0]) * self.grid_size))
+        y = int(round(float(state[1]) * self.grid_size))
+        x = min(max(x, 0), self.grid_size - 1)
+        y = min(max(y, 0), self.grid_size - 1)
         current_pos = (x, y)
 
         # Objetivo no definido o ya alcanzado
@@ -170,8 +180,14 @@ class AStarAgent(BaseAgent):
         reward:     float,
         next_state: np.ndarray,
         done:       bool,
+        next_mask:  Optional[np.ndarray] = None,
     ) -> None:
-        """Actualiza contadores de episodio (no almacena transiciones)."""
+        """Actualiza contadores de episodio (no almacena transiciones).
+
+        `next_mask` se acepta por compatibilidad con la firma de BaseAgent
+        (el training loop lo pasa a todos los agentes) pero A* lo ignora:
+        no tiene replay buffer ni target Q que enmascarar.
+        """
         self.total_reward  += reward
         self.episode_steps += 1
 

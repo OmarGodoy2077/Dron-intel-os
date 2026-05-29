@@ -145,10 +145,15 @@ class BaseAgent(ABC):
         reward:     float,
         next_state: np.ndarray,
         done:       bool,
+        next_mask:  Optional[np.ndarray] = None,
     ) -> None:
         """Almacena una transición (s, a, r, s', done) en el buffer de experiencia.
 
-        Los agentes planificadores pueden usar esto sólo para actualizar contadores.
+        Args:
+            next_mask: máscara de acciones válidas en next_state. Los agentes con
+                masking (DQN/Neuro-DQN) la usan para el target Q; los planificadores
+                sin buffer (A*) la ignoran. Mantener el parámetro en la firma base
+                permite que el training loop invoque a todos los agentes igual.
         """
 
     @abstractmethod

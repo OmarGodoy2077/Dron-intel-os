@@ -28,6 +28,7 @@ Notas de despliegue:
 
 import asyncio
 import json
+import math
 import logging
 import os
 import sys
@@ -124,6 +125,22 @@ DEMAND_TOP_K = 5
 # Connection Manager WebSocket
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _json_safe(obj: Any) -> Any:
+    """Reemplaza recursivamente floats no-finitos (NaN/Inf) por None.
+
+    JSON estándar no admite NaN/Infinity; el navegador los rechaza al hacer
+    JSON.parse y descarta el mensaje completo. Esta función limpia el payload
+    para que la serialización con allow_nan=False nunca falle.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 class ConnectionManager:
     """Gestiona múltiples conexiones WebSocket con tolerancia a desconexiones."""
 
@@ -140,7 +157,11 @@ class ConnectionManager:
         logger.debug("WS desconectado — total: %d", len(self.connections))
 
     async def broadcast(self, payload: Dict) -> None:
-        text  = json.dumps(payload, default=str)
+        # allow_nan=False evita emitir los tokens NaN/Infinity (JSON inválido):
+        # JSON.parse del navegador los rechaza y descarta el mensaje entero, lo
+        # que dejaba las gráficas de A* (epsilon=NaN) sin datos. _json_safe
+        # convierte cualquier no-finito a None ANTES de serializar.
+        text  = json.dumps(_json_safe(payload), default=str, allow_nan=False)
         stale: Set[WebSocket] = set()
         for ws in list(self.connections):
             try:
@@ -212,7 +233,12 @@ async def get_summary(system: Optional[str] = None, last_n: int = 100) -> Dict:
 @app.get("/metrics/comparison")
 async def get_comparison() -> JSONResponse:
     df = metrics.get_comparison_table()
-    return JSONResponse(content=df.to_dict() if not df.empty else {})
+    if df.empty:
+        return JSONResponse(content={})
+    # JSON no admite NaN/Inf. convergence_episode es None (→NaN al mezclar con
+    # ints en una columna) cuando un sistema no convergió; lo normalizamos a null.
+    safe = df.replace([np.inf, -np.inf], np.nan).where(lambda d: d.notna(), None)
+    return JSONResponse(content=safe.to_dict())
 
 
 @app.get("/metrics/curve/{system}")
@@ -404,6 +430,11 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
+        pass
+    except Exception:
+        # Cualquier otro fallo de socket: no dejar la conexión colgada en el set.
+        logger.debug("WS cerrado por excepción inesperada", exc_info=True)
+    finally:
         manager.disconnect(ws)
 
 
@@ -574,6 +605,35 @@ def _get_astar_target(
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _training_loop(
+    system: str, max_episodes: int, base_seed: Optional[int] = None
+) -> None:
+    """Wrapper robusto del loop de entrenamiento.
+
+    Garantiza que `training_active` se reponga a False y que el frontend reciba
+    un evento de error si el loop interno lanza una excepción. Sin esto, una
+    excepción en la task fire-and-forget dejaba `training_active=True` para
+    siempre → la UI mostraba "entrenando" pero nada progresaba (sistema trabado).
+    """
+    global training_active
+    try:
+        await _run_training(system, max_episodes, base_seed)
+    except Exception as exc:  # noqa: BLE001 — el loop nunca debe morir en silencio
+        logger.exception("Training loop abortado por error: system=%s", system)
+        try:
+            await manager.broadcast({
+                "type":    "training_error",
+                "system":  system,
+                "error":   f"{type(exc).__name__}: {exc}",
+            })
+        except Exception:
+            logger.warning("No se pudo notificar el error de entrenamiento al frontend")
+    finally:
+        # Cleanup garantizado: si _run_training terminó normalmente ya puso
+        # training_active=False; esto cubre el camino de excepción.
+        training_active = False
+
+
+async def _run_training(
     system: str, max_episodes: int, base_seed: Optional[int] = None
 ) -> None:
     """Loop principal de entrenamiento — ejecuta max_episodes episodios.
@@ -820,7 +880,14 @@ async def _training_loop(
                     "deliveries_done": int(env.package_delivered.sum()),
                     "symbolic_mask": last_masks_json[0] if last_masks_json else None,
                 })
-                await asyncio.sleep(0)  # ceder el event loop
+
+            # Ceder el event loop CADA step (no solo cada 25). Cada step es
+            # CPU-bound (búsquedas A* o forward/backward DQN para 5 drones); sin
+            # este yield el loop monopolizaba el hilo ~25 steps seguidos y dejaba
+            # sin atender el ping/pong del WebSocket y los endpoints HTTP, con lo
+            # que el frontend se "trababa". asyncio.sleep(0) es casi gratis: solo
+            # devuelve el control al event loop una vuelta.
+            await asyncio.sleep(0)
 
             if dones.all() or truncated.all():
                 break
@@ -850,10 +917,10 @@ async def _training_loop(
         metrics.record_episode(record)
 
         # ── Broadcast cada episodio (o cada 2 para reducir overhead) ──────────
-        avg_epsilon = float(np.mean([
-            getattr(a, "epsilon", 1.0) for a in agents
-            if hasattr(a, "epsilon")
-        ])) if agents else 1.0
+        # A* no tiene epsilon → la lista queda vacía y np.mean([]) daría NaN
+        # (JSON inválido que rompía las gráficas). En ese caso epsilon = None.
+        epsilons = [a.epsilon for a in agents if hasattr(a, "epsilon")]
+        avg_epsilon = float(np.mean(epsilons)) if epsilons else None
         avg_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
 
         if episode % 2 == 0:
